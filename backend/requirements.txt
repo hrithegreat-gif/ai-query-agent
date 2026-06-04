@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-dotenv
+langchain
+langchain-ollama
+langchain-core
+pydantic
+tavily-python
+firecrawl-py
+sqlalchemy
+asyncpg
+redis
