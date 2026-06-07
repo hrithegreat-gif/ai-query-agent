@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 type Role = 'user' | 'assistant'
@@ -69,6 +69,18 @@ type SseEvent = {
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 const sourcePattern = /\[Source:\s*(https?:\/\/[^\]\s]+)\s*\]/g
 
+const WELCOME_MESSAGE: Message = {
+  id: crypto.randomUUID(),
+  role: 'assistant',
+  content:
+    'Ask me a question. I can search for current information, show the steps I took, cite sources, detect conflicts, and suggest follow-ups.',
+  complete: true,
+  reasoning: [],
+  citations: [],
+  sources: [],
+  followups: [],
+}
+
 function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
   const events: SseEvent[] = []
   const chunks = buffer.split('\n\n')
@@ -76,7 +88,8 @@ function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
 
   for (const chunk of chunks) {
     const lines = chunk.split('\n')
-    const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() ?? 'message'
+    const event =
+      lines.find((line) => line.startsWith('event:'))?.slice(6).trim() ?? 'message'
     const data = lines
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trim())
@@ -101,7 +114,13 @@ function renderAnswer(content: string): ReactNode[] {
     }
 
     parts.push(
-      <a className="inline-source" href={url} target="_blank" rel="noreferrer" key={`${url}-${index}`}>
+      <a
+        className="inline-source"
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        key={`${url}-${index}`}
+      >
         Source
       </a>,
     )
@@ -165,23 +184,17 @@ ${sources}
 }
 
 function App() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: 'Ask me a question. I can search for current information, show the steps I took, cite sources, detect conflicts, and suggest follow-ups.',
-      complete: true,
-      reasoning: [],
-      citations: [],
-      sources: [],
-      followups: [],
-    },
-  ])
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
   const [query, setQuery] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState('')
   const sessionId = useMemo(() => crypto.randomUUID(), [])
   const abortRef = useRef<AbortController | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
   async function submitQuery(rawQuery: string) {
     const trimmed = rawQuery.trim()
@@ -325,6 +338,13 @@ function App() {
     setIsStreaming(false)
   }
 
+  function resetChat() {
+    if (isStreaming) stopStreaming()
+    setMessages([{ ...WELCOME_MESSAGE, id: crypto.randomUUID() }])
+    setQuery('')
+    setError('')
+  }
+
   return (
     <main className="app-shell">
       <section className="chat-panel" aria-label="AI Query Agent chat">
@@ -333,7 +353,14 @@ function App() {
             <p className="eyebrow">Real-Time AI Query Agent</p>
             <h1>Grounded answers with feedback loops</h1>
           </div>
-          <span className={isStreaming ? 'status live' : 'status'}>{isStreaming ? 'Live' : 'Ready'}</span>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <button type="button" className="new-chat" onClick={resetChat}>
+              New chat
+            </button>
+            <span className={isStreaming ? 'status live' : 'status'}>
+              {isStreaming ? 'Live' : 'Ready'}
+            </span>
+          </div>
         </header>
 
         <div className="messages" aria-live="polite">
@@ -365,7 +392,14 @@ function App() {
                 )}
 
                 <div className="answer-text">
-                  {message.content ? renderAnswer(message.content) : 'Waiting for the first token...'}
+                  {message.content
+                    ? renderAnswer(message.content)
+                    : !message.complete && (
+                        <div className="skeleton">
+                          <div className="skeleton-line" />
+                          <div className="skeleton-line short" />
+                        </div>
+                      )}
                 </div>
 
                 {message.confidence && (
@@ -376,8 +410,16 @@ function App() {
                 )}
 
                 {message.contradictions && (
-                  <div className={message.contradictions.has_conflicts ? 'conflicts warning' : 'conflicts'}>
-                    <h2>{message.contradictions.has_conflicts ? 'Conflicts detected' : 'Sources agree'}</h2>
+                  <div
+                    className={
+                      message.contradictions.has_conflicts ? 'conflicts warning' : 'conflicts'
+                    }
+                  >
+                    <h2>
+                      {message.contradictions.has_conflicts
+                        ? 'Conflicts detected'
+                        : 'Sources agree'}
+                    </h2>
                     <p>{message.contradictions.summary}</p>
                     {message.contradictions.items.length > 0 && (
                       <details>
@@ -401,26 +443,32 @@ function App() {
                   </div>
                 )}
 
-                {message.role === 'assistant' && message.complete && (message.citations?.length ?? 0) > 0 && (
-                  <div className="sources-panel">
-                    <h2>Sources</h2>
-                    <ul>
-                      {message.citations?.map((source) => (
-                        <li key={source.url}>
-                          <a href={source.url} target="_blank" rel="noreferrer">
-                            {source.title}
-                          </a>
-                          <span>{freshnessLabel(source)}</span>
-                          {source.snippet && <p>{source.snippet}</p>}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                {message.role === 'assistant' &&
+                  message.complete &&
+                  (message.citations?.length ?? 0) > 0 && (
+                    <div className="sources-panel">
+                      <h2>Sources</h2>
+                      <ul>
+                        {message.citations?.map((source) => (
+                          <li key={source.url}>
+                            <a href={source.url} target="_blank" rel="noreferrer">
+                              {source.title}
+                            </a>
+                            <span>{freshnessLabel(source)}</span>
+                            {source.snippet && <p>{source.snippet}</p>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
                 {message.role === 'assistant' && message.complete && message.content && (
                   <div className="answer-actions">
-                    <button type="button" className="compact" onClick={() => exportMarkdown(message)}>
+                    <button
+                      type="button"
+                      className="compact"
+                      onClick={() => exportMarkdown(message)}
+                    >
                       Export
                     </button>
                   </div>
@@ -429,7 +477,11 @@ function App() {
                 {message.followups && message.followups.length > 0 && (
                   <div className="followups">
                     {message.followups.map((followup) => (
-                      <button type="button" key={followup} onClick={() => void submitQuery(followup)}>
+                      <button
+                        type="button"
+                        key={followup}
+                        onClick={() => void submitQuery(followup)}
+                      >
                         {followup}
                       </button>
                     ))}
@@ -438,6 +490,8 @@ function App() {
               </div>
             </article>
           ))}
+          {/* Sentinel — keeps view scrolled to latest message */}
+          <div ref={messagesEndRef} />
         </div>
 
         {error && <p className="error">{error}</p>}
