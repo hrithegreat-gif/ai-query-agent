@@ -1,0 +1,17 @@
+Decide if this query requires live web search to answer accurately.
+
+Answer YES if the query asks about:
+- Current events, news, or recent developments
+- Live data: prices, weather, stocks
+- Specific recent facts that may have changed
+- Research, studies, or statistics that need sourcing
+- Contested topics where real sources would help
+- Comparisons where up-to-date information matters
+
+Answer NO if the query:
+- Can be answered from general knowledge alone
+- Is mathematical, logical, or definitional
+- Is a follow-up that needs no new facts
+- Is philosophical or purely opinion-based with no factual basis
+
+Return ONLY raw JSON: {"search": true} or {"search": false}

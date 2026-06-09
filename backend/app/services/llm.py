@@ -13,6 +13,14 @@ from app.services.events import sse
 from app.services.memory import append_memory, get_memory
 from app.services.storage import save_message
 from app.services.web import SearchResult, scrape_url, search_web
+from app.config import load_prompt, settings
+
+SYSTEM_PROMPT = load_prompt("system")
+DECOMPOSE_PROMPT = load_prompt("decompose")
+CONFIDENCE_PROMPT = load_prompt("confidence")
+CONTRADICTIONS_PROMPT = load_prompt("contradictions")
+FOLLOWUPS_PROMPT = load_prompt("followups")
+REFINE_PROMPT = load_prompt("refine")
 
 llm = ChatOllama(
     model=settings.ollama_model,
@@ -104,14 +112,26 @@ def _parse_json(text: str) -> Any:
     return json.loads(cleaned.strip())
 
 
-def should_search(query: str) -> bool:
-    lowered = query.lower()
-    result = (
-        any(term in lowered for term in CURRENT_INFO_TERMS)
-        or any(term in lowered for term in OPINION_TERMS)
-    )
-  
-    return result
+async def should_search(query: str) -> bool:
+    prompt = [
+        SystemMessage(content=load_prompt("should_search")),
+        HumanMessage(content=query),
+    ]
+    try:
+        response = await llm.ainvoke(prompt)
+        parsed = _parse_json(str(response.content))
+        result = bool(parsed.get("search", False))
+        print(f"DEBUG should_search('{query}') = {result}")
+        return result
+    except Exception:
+        # Fallback to keyword matching if LLM call fails
+        lowered = query.lower()
+        return any(term in lowered for term in {
+            "latest", "today", "current", "recent", "news",
+            "price", "stock", "weather", "release", "update",
+            "research", "study", "survey", "compare", "vs",
+            "good or bad", "better or worse", "more productive",
+        })
 
 
 def is_complex_query(query: str) -> bool:
@@ -244,14 +264,7 @@ async def _decompose_query(query: str) -> list[str]:
     if not is_complex_query(query):
         return []
     prompt = [
-        SystemMessage(
-            content=(
-                "Decide whether this user question needs decomposition. "
-                "If it does, return JSON only: {\"sub_questions\": [\"...\", \"...\"]}. "
-                "Use 2 or 3 concise sub-questions. If it does not, return {\"sub_questions\": []}. "
-                "Return ONLY raw JSON. No markdown, no explanation."
-            )
-        ),
+       SystemMessage(content=DECOMPOSE_PROMPT),
         HumanMessage(content=query),
     ]
     try:
@@ -289,15 +302,7 @@ def _confidence_fallback(answer: str, citations: list[dict[str, Any]]) -> dict[s
 
 async def _confidence(answer: str, citations: list[dict[str, Any]]) -> dict[str, str]:
     prompt = [
-        SystemMessage(
-            content=(
-                "Rate the confidence of this answer as HIGH, MEDIUM, or LOW. "
-                "Return ONLY raw JSON, no markdown, no explanation: "
-                "{\"level\":\"HIGH|MEDIUM|LOW\",\"reason\":\"short reason\"}. "
-                "Consider citation count, source quality, and whether the answer admits uncertainty. "
-                "Use LOW when sources are vague, outdated, or the answer is speculative."
-            )
-        ),
+    SystemMessage(content=CONFIDENCE_PROMPT),
         HumanMessage(content=f"Answer:\n{answer}\n\nCitation count: {len(citations)}"),
     ]
     try:
@@ -317,12 +322,7 @@ async def _confidence(answer: str, citations: list[dict[str, Any]]) -> dict[str,
 
 async def _refine_query(query: str, answer: str) -> str:
     prompt = [
-        SystemMessage(
-            content=(
-                "Rewrite the user query into a more specific web search query. "
-                "Return only the search query, no quotes or explanation."
-            )
-        ),
+        SystemMessage(content=REFINE_PROMPT),
         HumanMessage(content=f"Original query: {query}\nLow-confidence answer:\n{answer}"),
     ]
     try:
@@ -339,23 +339,7 @@ async def _contradictions(sources: list[SearchResult]) -> dict[str, Any]:
 
     source_text = _format_sources(sources[:5])
     prompt = [
-        SystemMessage(
-            content=(
-                "You are a fact-checker. Compare these source snippets carefully.\n"
-                "Look for ANY disagreements, opposing views, or conflicting claims — "
-                "including opinion differences, statistical disagreements, or opposing recommendations.\n"
-                "Be generous in flagging conflicts — if sources lean in different directions, that counts.\n"
-                "Return ONLY raw JSON, no markdown, no explanation:\n"
-                "{\n"
-                "  \"has_conflicts\": boolean,\n"
-                "  \"summary\": \"one sentence describing whether sources agree or conflict\",\n"
-                "  \"items\": [\n"
-                "    {\"source_a\": \"url\", \"claim_a\": \"what source A says\", "
-                "\"source_b\": \"url\", \"claim_b\": \"what source B says\"}\n"
-                "  ]\n"
-                "}"
-            )
-        ),
+        SystemMessage(content=CONTRADICTIONS_PROMPT),
         HumanMessage(content=source_text),
     ]
     try:
@@ -377,13 +361,7 @@ async def _contradictions(sources: list[SearchResult]) -> dict[str, Any]:
 
 async def _followups(query: str, answer: str) -> list[str]:
     prompt = [
-        SystemMessage(
-            content=(
-                "Suggest 3 concise, natural follow-up questions for this answer. "
-                "Return ONLY raw JSON, no markdown, no explanation: "
-                "{\"questions\": [\"...\", \"...\", \"...\"]}."
-            )
-        ),
+        SystemMessage(content=FOLLOWUPS_PROMPT),
         HumanMessage(content=f"Original question: {query}\nAnswer:\n{answer}"),
     ]
     try:
@@ -430,7 +408,7 @@ async def _build_live_context(query: str) -> AsyncIterator[tuple[str, list[Searc
         )
         return
 
-    if should_search(query):
+    if await should_search(query):
         yield (_tool_call("SEARCHING", "tavily_search", query, "Searching the live web"), [], "")
         results = await search_web(query)
         if not results:

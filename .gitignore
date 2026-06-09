@@ -1,7 +1,39 @@
-# Root .gitignore
+# ── Python ────────────────────────────────────────────────────────────────────
 backend/venv/
 backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/*.egg-info/
+
+# ── Environment variables (NEVER commit these) ────────────────────────────────
+.env
 backend/.env
+frontend/.env
+frontend/.env.local
+frontend/.env.production
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
 frontend/node_modules/
 frontend/dist/
-.env
+frontend/.vite/
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+# Keep Dockerfiles and docker-compose.yml — they're safe to commit
+# Only ignore generated docker artifacts
+docker-data/
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── VS Code ───────────────────────────────────────────────────────────────────
+.vscode/settings.json
+.vscode/launch.json
+# Keep .vscode/extensions.json — useful for teammates
+
+__pycache__/
+*.pyc

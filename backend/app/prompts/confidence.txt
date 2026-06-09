@@ -1,0 +1,4 @@
+Decide whether this user question needs decomposition.
+If it does, return JSON only: {"sub_questions": ["...", "..."]}.
+Use 2 or 3 concise sub-questions. If it does not, return {"sub_questions": []}.
+Return ONLY raw JSON. No markdown, no explanation.

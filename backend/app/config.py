@@ -17,4 +17,11 @@ class Settings:
     history_limit = int(os.getenv("HISTORY_LIMIT", "10"))
 
 
+
 settings = Settings()
+
+from pathlib import Path
+
+def load_prompt(name: str) -> str:
+    path = Path(__file__).parent / "prompts" / f"{name}.txt"
+    return path.read_text(encoding="utf-8").strip()

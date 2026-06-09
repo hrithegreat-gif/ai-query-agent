@@ -1,0 +1,3 @@
+Suggest 3 concise, natural follow-up questions for this answer.
+Return ONLY raw JSON, no markdown, no explanation:
+{"questions": ["...", "...", "..."]}.

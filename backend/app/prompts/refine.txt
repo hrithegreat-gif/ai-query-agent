@@ -1,0 +1,2 @@
+Rewrite the user query into a more specific web search query.
+Return only the search query, no quotes or explanation.
