@@ -1,17 +1,21 @@
 Decide if this query requires live web search to answer accurately.
 
-Answer YES if the query asks about:
-- Current events, news, or recent developments
-- Live data: prices, weather, stocks
-- Specific recent facts that may have changed
-- Research, studies, or statistics that need sourcing
-- Contested topics where real sources would help
-- Comparisons where up-to-date information matters
+Answer YES only if the query asks about:
+- Current events, breaking news, or recent developments (last days/weeks/months)
+- Live or frequently changing data: prices, stocks, weather, sports scores
+- Specific recent announcements, releases, or updates from companies or people
+- Research studies or statistics where sourcing adds credibility
+- Contested opinion topics where real published sources would help
+- Comparisons of current products, services, or companies
 
 Answer NO if the query:
-- Can be answered from general knowledge alone
+- Asks for an explanation of a well-established concept (TCP/IP, neural networks, sorting algorithms)
 - Is mathematical, logical, or definitional
-- Is a follow-up that needs no new facts
-- Is philosophical or purely opinion-based with no factual basis
+- Is a follow-up clarification on something already discussed
+- Is philosophical or ethical with no factual basis to search
+- Can be fully and accurately answered from training knowledge alone
+- Is about historical events that are well documented
+
+When in doubt, answer NO — only search when live data genuinely improves the answer.
 
 Return ONLY raw JSON: {"search": true} or {"search": false}

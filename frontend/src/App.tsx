@@ -83,7 +83,8 @@ type SseEvent = {
   data: string
 }
 
-const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+const apiUrl = import.meta.env.VITE_API_URL ?? ''
+const chatUrl = apiUrl ? `${apiUrl}/chat` : '/api/chat'
 const sourcePattern = /\[Source:\s*(https?:\/\/[^\]\s]+)\s*\]/g
 
 const WELCOME_MESSAGE: Message = {
@@ -438,7 +439,7 @@ function App() {
     abortRef.current = controller
 
     try {
-      const response = await fetch(`${apiUrl}/chat`, {
+      const response = await fetch(chatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: trimmed, session_id: sessionId }),
