@@ -7,7 +7,7 @@ backend/**/*.pyo
 backend/.pytest_cache/
 backend/.mypy_cache/
 backend/*.egg-info/
-
+backend/.venv/
 # ── Environment variables (NEVER commit these) ────────────────────────────────
 .env
 backend/.env

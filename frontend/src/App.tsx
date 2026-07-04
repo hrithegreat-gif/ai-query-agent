@@ -1,5 +1,5 @@
 import type { FormEvent, ReactNode } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Send,
   Square,
@@ -16,8 +16,9 @@ import {
   Clock,
   Loader2,
   MessageSquare,
+  Moon,
+  Sun,
 } from 'lucide-react'
-
 
 type Role = 'user' | 'assistant'
 type ConfidenceLevel = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -78,6 +79,14 @@ type Message = {
   complete?: boolean
 }
 
+type ChatSession = {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  messages: Message[]
+}
+
 type SseEvent = {
   event: string
   data: string
@@ -87,16 +96,45 @@ const apiUrl = import.meta.env.VITE_API_URL ?? ''
 const chatUrl = apiUrl ? `${apiUrl}/chat` : '/api/chat'
 const sourcePattern = /\[Source:\s*(https?:\/\/[^\]\s]+)\s*\]/g
 
-const WELCOME_MESSAGE: Message = {
-  id: crypto.randomUUID(),
-  role: 'assistant',
-  content:
-    'Ask me a question. I can search for current information, show the steps I took, cite sources, detect conflicts, and suggest follow-ups.',
-  complete: true,
-  reasoning: [],
-  citations: [],
-  sources: [],
-  followups: [],
+function createWelcomeMessage(): Message {
+  return {
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    content:
+      'Ask me a question. I can search for current information, show the steps I took, cite sources, detect conflicts, and suggest follow-ups.',
+    complete: true,
+    reasoning: [],
+    citations: [],
+    sources: [],
+    followups: [],
+  }
+}
+
+function createSession(title = 'New chat', messages: Message[] = [createWelcomeMessage()]): ChatSession {
+  return {
+    id: crypto.randomUUID(),
+    title,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    messages,
+  }
+}
+
+function loadStoredSessions(): ChatSession[] {
+  if (typeof window === 'undefined') {
+    return []
+  }
+
+  try {
+    const raw = window.localStorage.getItem('ai-query-agent-sessions')
+    if (!raw) {
+      return []
+    }
+    const parsed = JSON.parse(raw) as ChatSession[]
+    return parsed.filter((session) => session && typeof session.id === 'string')
+  } catch {
+    return []
+  }
 }
 
 function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
@@ -133,7 +171,7 @@ function renderAnswer(content: string): ReactNode[] {
 
     parts.push(
       <a
-        className="inline-flex items-center gap-1 text-hcl-blue-500 bg-hcl-blue-50 border border-hcl-blue-200 rounded-full px-2 py-0.5 text-[11px] font-bold no-underline hover:bg-hcl-blue-100 transition-colors"
+        className="inline-flex items-center gap-1 text-hcl-blue-500 bg-hcl-blue-50 border border-hcl-blue-200 rounded-full px-2 py-0.5 text-[11px] font-bold no-underline hover:bg-hcl-blue-100 transition-colors dark:bg-slate-800 dark:border-slate-700 dark:text-hcl-blue-300"
         href={url}
         target="_blank"
         rel="noreferrer"
@@ -155,16 +193,6 @@ function renderAnswer(content: string): ReactNode[] {
 
 function freshnessLabel(source: Source): string {
   return source.published_date || 'date unknown'
-}
-
-function updateAssistant(
-  assistantId: string,
-  setMessages: React.Dispatch<React.SetStateAction<Message[]>>,
-  updater: (message: Message) => Message,
-) {
-  setMessages((current) =>
-    current.map((message) => (message.id === assistantId ? updater(message) : message)),
-  )
 }
 
 function exportMarkdown(message: Message) {
@@ -215,20 +243,20 @@ function TypingIndicator() {
 function ConfidenceBadge({ confidence }: { confidence: Confidence }) {
   const config = {
     HIGH: {
-      bg: 'bg-emerald-50',
-      border: 'border-emerald-200',
+      bg: 'bg-emerald-50 dark:bg-emerald-950/40',
+      border: 'border-emerald-200 dark:border-emerald-900',
       badge: 'bg-emerald-600',
       icon: <CheckCircle2 className="w-4 h-4 text-emerald-600" />,
     },
     MEDIUM: {
-      bg: 'bg-amber-50',
-      border: 'border-amber-200',
+      bg: 'bg-amber-50 dark:bg-amber-950/40',
+      border: 'border-amber-200 dark:border-amber-900',
       badge: 'bg-amber-600',
       icon: <Clock className="w-4 h-4 text-amber-600" />,
     },
     LOW: {
-      bg: 'bg-red-50',
-      border: 'border-red-200',
+      bg: 'bg-red-50 dark:bg-red-950/40',
+      border: 'border-red-200 dark:border-red-900',
       badge: 'bg-red-600',
       icon: <AlertTriangle className="w-4 h-4 text-red-600" />,
     },
@@ -243,9 +271,9 @@ function ConfidenceBadge({ confidence }: { confidence: Confidence }) {
             <span className={`${config.badge} text-white text-[11px] font-bold px-2 py-0.5 rounded-full`}>
               {confidence.level}
             </span>
-            <span className="text-[12px] font-semibold text-hcl-navy-400">Confidence</span>
+            <span className="text-[12px] font-semibold text-hcl-navy-400 dark:text-slate-300">Confidence</span>
           </div>
-          <p className="text-[13px] text-hcl-navy-500 leading-relaxed">{confidence.reason}</p>
+          <p className="text-[13px] text-hcl-navy-500 leading-relaxed dark:text-slate-400">{confidence.reason}</p>
         </div>
       </div>
     </div>
@@ -256,16 +284,16 @@ function ReasoningPanel({ steps, complete }: { steps: ReasoningStep[]; complete?
   const [open, setOpen] = useState(!complete)
 
   return (
-    <div className="mb-4 rounded-xl border border-hcl-blue-100 bg-gradient-to-br from-hcl-blue-50/60 to-white overflow-hidden animate-fade-in">
+    <div className="mb-4 rounded-xl border border-hcl-blue-100 bg-gradient-to-br from-hcl-blue-50/60 to-white overflow-hidden animate-fade-in dark:border-slate-800 dark:from-slate-800/80 dark:to-slate-900">
       <button
         type="button"
-        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-hcl-blue-50/40 transition-colors"
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-hcl-blue-50/40 transition-colors dark:hover:bg-slate-800/70"
         onClick={() => setOpen(!open)}
       >
         <div className="flex items-center gap-2">
           <Zap className="w-4 h-4 text-hcl-blue-500" />
-          <span className="text-[13px] font-bold text-hcl-blue-700">Reasoning Steps</span>
-          <span className="text-[11px] font-semibold text-hcl-blue-400 bg-hcl-blue-100 rounded-full px-2 py-0.5">
+          <span className="text-[13px] font-bold text-hcl-blue-700 dark:text-hcl-blue-300">Reasoning Steps</span>
+          <span className="text-[11px] font-semibold text-hcl-blue-400 bg-hcl-blue-100 rounded-full px-2 py-0.5 dark:bg-slate-800 dark:text-slate-300">
             {steps.length}
           </span>
         </div>
@@ -279,22 +307,22 @@ function ReasoningPanel({ steps, complete }: { steps: ReasoningStep[]; complete?
                 <div className="w-6 h-6 rounded-full bg-hcl-blue-500 text-white flex items-center justify-center text-[10px] font-bold shrink-0">
                   {index + 1}
                 </div>
-                {index < steps.length - 1 && <div className="w-0.5 flex-1 bg-hcl-blue-200 mt-1" />}
+                {index < steps.length - 1 && <div className="w-0.5 flex-1 bg-hcl-blue-200 mt-1 dark:bg-slate-700" />}
               </div>
               <div className="flex-1 pb-2 min-w-0">
-                <span className="block text-[11px] font-bold text-hcl-teal-600 uppercase tracking-wide mb-0.5">
+                <span className="block text-[11px] font-bold text-hcl-teal-600 uppercase tracking-wide mb-0.5 dark:text-hcl-teal-400">
                   {step.type.replaceAll('_', ' ')}
                 </span>
-                <p className="text-[13px] text-hcl-navy-500 leading-relaxed">{step.message}</p>
+                <p className="text-[13px] text-hcl-navy-500 leading-relaxed dark:text-slate-400">{step.message}</p>
                 {step.input && (
-                  <code className="block mt-2 text-[12px] text-hcl-navy-600 bg-white border border-hcl-blue-100 rounded-lg px-3 py-2 leading-relaxed whitespace-pre-wrap font-mono">
+                  <code className="block mt-2 text-[12px] text-hcl-navy-600 bg-white border border-hcl-blue-100 rounded-lg px-3 py-2 leading-relaxed whitespace-pre-wrap font-mono dark:bg-slate-950 dark:border-slate-700 dark:text-slate-300">
                     {step.input}
                   </code>
                 )}
                 {step.sub_questions && (
                   <ul className="mt-2 space-y-1">
                     {step.sub_questions.map((sq) => (
-                      <li key={sq} className="flex items-start gap-1.5 text-[12px] text-hcl-navy-400">
+                      <li key={sq} className="flex items-start gap-1.5 text-[12px] text-hcl-navy-400 dark:text-slate-500">
                         <span className="text-hcl-teal-500 mt-0.5">-</span>
                         {sq}
                       </li>
@@ -316,7 +344,7 @@ function ContradictionPanel({ report }: { report: ContradictionReport }) {
 
   return (
     <div className={`mt-4 rounded-xl border animate-fade-in ${
-      isWarning ? 'border-amber-200 bg-amber-50/60' : 'border-emerald-200 bg-emerald-50/60'
+      isWarning ? 'border-amber-200 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/30' : 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/30'
     }`}>
       <div className="px-4 py-3">
         <div className="flex items-center gap-2 mb-1">
@@ -326,12 +354,12 @@ function ContradictionPanel({ report }: { report: ContradictionReport }) {
             <Shield className="w-4 h-4 text-emerald-600" />
           )}
           <h2 className={`text-[13px] font-bold uppercase tracking-wide ${
-            isWarning ? 'text-amber-700' : 'text-emerald-700'
+            isWarning ? 'text-amber-700 dark:text-amber-300' : 'text-emerald-700 dark:text-emerald-300'
           }`}>
             {report.has_conflicts ? 'Conflicts detected' : 'Sources agree'}
           </h2>
         </div>
-        <p className="text-[13px] text-hcl-navy-500 leading-relaxed">{report.summary}</p>
+        <p className="text-[13px] text-hcl-navy-500 leading-relaxed dark:text-slate-400">{report.summary}</p>
         {report.items.length > 0 && (
           <div className="mt-2">
             <button
@@ -345,13 +373,13 @@ function ContradictionPanel({ report }: { report: ContradictionReport }) {
             {open && (
               <ul className="mt-3 space-y-2 animate-fade-in">
                 {report.items.map((conflict, index) => (
-                  <li key={`${conflict.source_a}-${index}`} className="border border-amber-200 rounded-lg bg-white/80 p-3">
-                    <p className="text-[13px] text-hcl-navy-600 mb-1">{conflict.claim_a}</p>
+                  <li key={`${conflict.source_a}-${index}`} className="border border-amber-200 rounded-lg bg-white/80 p-3 dark:border-slate-700 dark:bg-slate-900/80">
+                    <p className="text-[13px] text-hcl-navy-600 mb-1 dark:text-slate-300">{conflict.claim_a}</p>
                     <a href={conflict.source_a} target="_blank" rel="noreferrer"
                       className="inline-flex items-center gap-1 text-[11px] font-bold text-hcl-blue-500 hover:text-hcl-blue-700 mr-3">
                       <Globe className="w-3 h-3" /> Source A
                     </a>
-                    <p className="text-[13px] text-hcl-navy-600 mt-2 mb-1">{conflict.claim_b}</p>
+                    <p className="text-[13px] text-hcl-navy-600 mt-2 mb-1 dark:text-slate-300">{conflict.claim_b}</p>
                     <a href={conflict.source_b} target="_blank" rel="noreferrer"
                       className="inline-flex items-center gap-1 text-[11px] font-bold text-hcl-blue-500 hover:text-hcl-blue-700">
                       <Globe className="w-3 h-3" /> Source B
@@ -369,23 +397,23 @@ function ContradictionPanel({ report }: { report: ContradictionReport }) {
 
 function SourcesPanel({ citations }: { citations: Citation[] }) {
   return (
-    <div className="mt-4 border-t border-hcl-blue-100 pt-4 animate-fade-in">
+    <div className="mt-4 border-t border-hcl-blue-100 pt-4 animate-fade-in dark:border-slate-800">
       <div className="flex items-center gap-2 mb-3">
         <BookOpen className="w-4 h-4 text-hcl-blue-500" />
-        <h2 className="text-[12px] font-bold text-hcl-navy-400 uppercase tracking-wide">Sources</h2>
-        <span className="text-[11px] font-semibold text-hcl-blue-500 bg-hcl-blue-50 rounded-full px-2 py-0.5">
+        <h2 className="text-[12px] font-bold text-hcl-navy-400 uppercase tracking-wide dark:text-slate-400">Sources</h2>
+        <span className="text-[11px] font-semibold text-hcl-blue-500 bg-hcl-blue-50 rounded-full px-2 py-0.5 dark:bg-slate-800 dark:text-slate-300">
           {citations.length}
         </span>
       </div>
       <ul className="space-y-2">
         {citations.map((source) => (
-          <li key={source.url} className="border border-hcl-blue-100 rounded-xl bg-white p-3 hover:border-hcl-blue-200 hover:shadow-hcl transition-all duration-200">
+          <li key={source.url} className="border border-hcl-blue-100 rounded-xl bg-white p-3 hover:border-hcl-blue-200 hover:shadow-hcl transition-all duration-200 dark:border-slate-800 dark:bg-slate-900/70">
             <a href={source.url} target="_blank" rel="noreferrer"
-              className="block text-[13px] font-bold text-hcl-blue-600 hover:text-hcl-blue-800 no-underline transition-colors">
+              className="block text-[13px] font-bold text-hcl-blue-600 hover:text-hcl-blue-800 no-underline transition-colors dark:text-hcl-blue-300">
               {source.title}
             </a>
-            <span className="block mt-0.5 text-[11px] text-hcl-navy-300">{freshnessLabel(source)}</span>
-            {source.snippet && <p className="mt-1.5 text-[12px] text-hcl-navy-400 leading-relaxed">{source.snippet}</p>}
+            <span className="block mt-0.5 text-[11px] text-hcl-navy-300 dark:text-slate-500">{freshnessLabel(source)}</span>
+            {source.snippet && <p className="mt-1.5 text-[12px] text-hcl-navy-400 leading-relaxed dark:text-slate-400">{source.snippet}</p>}
           </li>
         ))}
       </ul>
@@ -394,21 +422,89 @@ function SourcesPanel({ citations }: { citations: Citation[] }) {
 }
 
 function App() {
-  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE])
+  const [sessions, setSessions] = useState<ChatSession[]>(() => {
+    const stored = loadStoredSessions()
+    return stored.length > 0 ? stored : [createSession('New chat', [createWelcomeMessage()])]
+  })
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => {
+    const stored = loadStoredSessions()
+    return stored[0]?.id ?? crypto.randomUUID()
+  })
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const stored = loadStoredSessions()
+    return stored[0]?.messages ?? [createWelcomeMessage()]
+  })
   const [query, setQuery] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState('')
-  const sessionId = useMemo(() => crypto.randomUUID(), [])
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem('ai-query-agent-theme') === 'dark' || window.matchMedia('(prefers-color-scheme: dark)').matches
+  })
+  const [showSidebar, setShowSidebar] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode)
+    window.localStorage.setItem('ai-query-agent-theme', darkMode ? 'dark' : 'light')
+  }, [darkMode])
+
+  useEffect(() => {
+    window.localStorage.setItem('ai-query-agent-sessions', JSON.stringify(sessions))
+  }, [sessions])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  function updateActiveSessionMessages(nextMessages: Message[], title?: string) {
+    if (!activeSessionId) {
+      return
+    }
+
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === activeSessionId
+          ? {
+              ...session,
+              title: title ?? session.title,
+              updatedAt: new Date().toISOString(),
+              messages: nextMessages,
+            }
+          : session,
+      ),
+    )
+  }
+
+  function selectSession(sessionId: string) {
+    const session = sessions.find((item) => item.id === sessionId)
+    if (!session) {
+      return
+    }
+    setActiveSessionId(sessionId)
+    setMessages(session.messages)
+    setShowSidebar(false)
+  }
+
+  function startNewChat() {
+    const freshSession = createSession('New chat', [createWelcomeMessage()])
+    setSessions((current) => [freshSession, ...current])
+    setActiveSessionId(freshSession.id)
+    setMessages(freshSession.messages)
+    setQuery('')
+    setError('')
+    setShowSidebar(false)
+  }
+
   async function submitQuery(rawQuery: string) {
     const trimmed = rawQuery.trim()
     if (!trimmed || isStreaming) return
+
+    const sessionIdToUse = activeSessionId ?? sessions[0]?.id ?? crypto.randomUUID()
+    if (!activeSessionId) {
+      setActiveSessionId(sessionIdToUse)
+    }
 
     const userMessage: Message = {
       id: crypto.randomUUID(),
@@ -430,7 +526,9 @@ function App() {
       complete: false,
     }
 
-    setMessages((current) => [...current, userMessage, assistantMessage])
+    const nextMessages = [...messages, userMessage, assistantMessage]
+    setMessages(nextMessages)
+    updateActiveSessionMessages(nextMessages, trimmed.length > 40 ? `${trimmed.slice(0, 37)}...` : trimmed)
     setQuery('')
     setError('')
     setIsStreaming(true)
@@ -442,7 +540,7 @@ function App() {
       const response = await fetch(chatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: trimmed, session_id: sessionId }),
+        body: JSON.stringify({ query: trimmed, session_id: sessionIdToUse }),
         signal: controller.signal,
       })
 
@@ -466,54 +564,87 @@ function App() {
           const payload = JSON.parse(item.data)
 
           if (item.event === 'token') {
-            updateAssistant(assistantId, setMessages, (message) => ({
-              ...message,
-              content: message.content + payload.token,
-              status: 'Answering',
-            }))
+            setMessages((current) => {
+              const updated = current.map((message) =>
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      content: message.content + payload.token,
+                      status: 'Answering',
+                    }
+                  : message,
+              )
+              updateActiveSessionMessages(updated)
+              return updated
+            })
           }
 
           if (item.event === 'tool_call') {
-            updateAssistant(assistantId, setMessages, (message) => ({
-              ...message,
-              status: payload.message,
-              sources: payload.sources ?? message.sources,
-              reasoning: [...(message.reasoning ?? []), payload],
-            }))
+            setMessages((current) => {
+              const updated = current.map((message) =>
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      status: payload.message,
+                      sources: payload.sources ?? message.sources,
+                      reasoning: [...(message.reasoning ?? []), payload],
+                    }
+                  : message,
+              )
+              updateActiveSessionMessages(updated)
+              return updated
+            })
           }
 
           if (item.event === 'confidence') {
-            updateAssistant(assistantId, setMessages, (message) => ({
-              ...message,
-              confidence: payload,
-            }))
+            setMessages((current) => {
+              const updated = current.map((message) =>
+                message.id === assistantId ? { ...message, confidence: payload } : message,
+              )
+              updateActiveSessionMessages(updated)
+              return updated
+            })
           }
 
           if (item.event === 'contradictions') {
-            updateAssistant(assistantId, setMessages, (message) => ({
-              ...message,
-              contradictions: payload,
-            }))
+            setMessages((current) => {
+              const updated = current.map((message) =>
+                message.id === assistantId ? { ...message, contradictions: payload } : message,
+              )
+              updateActiveSessionMessages(updated)
+              return updated
+            })
           }
 
           if (item.event === 'followups') {
-            updateAssistant(assistantId, setMessages, (message) => ({
-              ...message,
-              followups: payload.questions ?? [],
-            }))
+            setMessages((current) => {
+              const updated = current.map((message) =>
+                message.id === assistantId ? { ...message, followups: payload.questions ?? [] } : message,
+              )
+              updateActiveSessionMessages(updated)
+              return updated
+            })
           }
 
           if (item.event === 'done') {
-            updateAssistant(assistantId, setMessages, (message) => ({
-              ...message,
-              status: undefined,
-              sources: payload.sources ?? message.sources,
-              citations: payload.citations ?? [],
-              confidence: payload.confidence ?? message.confidence,
-              contradictions: payload.contradictions ?? message.contradictions,
-              followups: payload.followups ?? message.followups,
-              complete: true,
-            }))
+            setMessages((current) => {
+              const updated = current.map((message) =>
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      status: undefined,
+                      sources: payload.sources ?? message.sources,
+                      citations: payload.citations ?? [],
+                      confidence: payload.confidence ?? message.confidence,
+                      contradictions: payload.contradictions ?? message.contradictions,
+                      followups: payload.followups ?? message.followups,
+                      complete: true,
+                    }
+                  : message,
+              )
+              updateActiveSessionMessages(updated)
+              return updated
+            })
           }
 
           if (item.event === 'error') {
@@ -525,12 +656,20 @@ function App() {
       if ((err as Error).name !== 'AbortError') {
         const message = (err as Error).message
         setError(message)
-        updateAssistant(assistantId, setMessages, (item) => ({
-          ...item,
-          content: item.content || message,
-          status: undefined,
-          complete: true,
-        }))
+        setMessages((current) => {
+          const updated = current.map((item) =>
+            item.id === assistantId
+              ? {
+                  ...item,
+                  content: item.content || message,
+                  status: undefined,
+                  complete: true,
+                }
+              : item,
+          )
+          updateActiveSessionMessages(updated)
+          return updated
+        })
       }
     } finally {
       abortRef.current = null
@@ -550,188 +689,233 @@ function App() {
 
   function resetChat() {
     if (isStreaming) stopStreaming()
-    setMessages([{ ...WELCOME_MESSAGE, id: crypto.randomUUID() }])
+    const freshSession = createSession('New chat', [createWelcomeMessage()])
+    setSessions([freshSession, ...sessions.filter((session) => session.id !== freshSession.id)])
+    setActiveSessionId(freshSession.id)
+    setMessages(freshSession.messages)
     setQuery('')
     setError('')
+    setShowSidebar(false)
   }
 
   return (
-    <main className="min-h-screen gradient-hcl-mesh flex items-start justify-center p-4 sm:p-6 md:p-8">
-      <section className="w-full max-w-[1080px] min-h-[calc(100vh-64px)] flex flex-col bg-white/95 backdrop-blur-sm border border-hcl-blue-100 rounded-2xl shadow-hcl-xl overflow-hidden">
-        {/* Header */}
-        <header className="flex items-center justify-between gap-4 px-6 py-5 border-b border-hcl-blue-100 bg-gradient-to-r from-hcl-blue-50/50 to-transparent">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <Sparkles className="w-4 h-4 text-hcl-teal-500" />
-              <p className="text-[12px] font-bold text-hcl-teal-600 uppercase tracking-widest">
-                Real-Time AI Query Agent
-              </p>
+    <main className="h-screen w-screen gradient-hcl-mesh" >
+      <section className="w-full h-full flex bg-white dark:bg-slate-900 overflow-hidden">
+        <aside className={`${showSidebar ? 'flex' : 'hidden'} lg:flex w-full lg:w-64 flex-col border-b lg:border-b-0 lg:border-r border-hcl-blue-100 bg-gradient-to-b from-hcl-blue-50/70 to-white p-4 dark:border-slate-800 dark:from-slate-900 dark:to-slate-950`}>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-hcl-teal-600 dark:text-hcl-teal-400">History</p>
+              <h2 className="text-sm font-semibold text-hcl-navy-500 dark:text-slate-200">Recent conversations</h2>
             </div>
-            <h1 className="text-xl font-bold text-hcl-navy-500 leading-tight">
-              Grounded answers with feedback loops
-            </h1>
-          </div>
-          <div className="flex items-center gap-3 shrink-0">
             <button
               type="button"
-              onClick={resetChat}
-              className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-semibold text-hcl-navy-400 bg-white border border-hcl-blue-100 rounded-lg hover:bg-hcl-blue-50 hover:border-hcl-blue-200 transition-all duration-200"
+              onClick={startNewChat}
+              className="rounded-lg border border-hcl-blue-200 bg-white px-2.5 py-2 text-[12px] font-semibold text-hcl-blue-600 hover:bg-hcl-blue-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
-              New chat
+              + New
             </button>
-            <div className={`flex items-center gap-1.5 px-3 py-2 rounded-full text-[13px] font-bold border transition-all duration-300 ${
-              isStreaming
-                ? 'text-hcl-teal-700 border-hcl-teal-300 bg-hcl-teal-50'
-                : 'text-hcl-navy-300 border-hcl-blue-100 bg-white'
-            }`}>
-              <span className={`w-2 h-2 rounded-full transition-colors duration-300 ${
-                isStreaming ? 'bg-hcl-teal-500 animate-pulse' : 'bg-hcl-navy-200'
-              }`} />
-              {isStreaming ? 'Live' : 'Ready'}
-            </div>
           </div>
-        </header>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 scrollbar-hcl" aria-live="polite">
-          {messages.map((message) => (
-            <article
-              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} animate-slide-up`}
-              key={message.id}
-            >
-              <div className={`w-fit max-w-[min(760px,86%)] rounded-2xl ${
-                message.role === 'user'
-                  ? 'bg-gradient-to-br from-hcl-blue-500 to-hcl-blue-700 text-white shadow-hcl'
-                  : 'bg-white border border-hcl-blue-100 shadow-hcl'
-              }`}>
-              <div className="px-5 py-4">
-                {/* Status indicator */}
-                {message.status && (
-                  <div className="flex items-center gap-2 mb-3">
-                    <Loader2 className="w-3.5 h-3.5 text-hcl-blue-500 animate-spin" />
-                    <span className="text-[12px] font-bold text-hcl-blue-500">{message.status}</span>
-                  </div>
-                )}
-
-                {/* Reasoning */}
-                {message.reasoning && message.reasoning.length > 0 && (
-                  <ReasoningPanel steps={message.reasoning} complete={message.complete} />
-                )}
-
-                {/* Answer text */}
-                <div className="text-[14px] leading-[1.65] whitespace-pre-wrap break-words">
-                  {message.content ? (
-                    <span className={message.role === 'user' ? 'text-white' : 'text-hcl-navy-600'}>
-                      {renderAnswer(message.content)}
-                    </span>
-                  ) : !message.complete ? (
-                    <div className="flex flex-col gap-2.5 py-2">
-                      <div className="h-3.5 rounded-lg bg-gradient-to-r from-hcl-blue-100 via-hcl-blue-50 to-hcl-blue-100 bg-[length:200%_100%] animate-shimmer w-[85%]" />
-                      <div className="h-3.5 rounded-lg bg-gradient-to-r from-hcl-blue-100 via-hcl-blue-50 to-hcl-blue-100 bg-[length:200%_100%] animate-shimmer w-[55%]" />
-                    </div>
-                  ) : null}
-                </div>
-
-                {/* Typing indicator while streaming empty content */}
-                {!message.content && !message.complete && message.status === 'Answering' && <TypingIndicator />}
-
-                {/* Confidence */}
-                {message.confidence && <ConfidenceBadge confidence={message.confidence} />}
-
-                {/* Contradictions */}
-                {message.contradictions && <ContradictionPanel report={message.contradictions} />}
-
-                {/* Sources */}
-                {message.role === 'assistant' && message.complete && (message.citations?.length ?? 0) > 0 && (
-                  <SourcesPanel citations={message.citations!} />
-                )}
-
-                {/* Actions */}
-                {message.role === 'assistant' && message.complete && message.content && (
-                  <div className="flex justify-end mt-4">
-                    <button
-                      type="button"
-                      onClick={() => exportMarkdown(message)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold text-hcl-navy-400 bg-hcl-blue-50 border border-hcl-blue-100 rounded-lg hover:bg-hcl-blue-100 hover:border-hcl-blue-200 transition-all duration-200"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      Export
-                    </button>
-                  </div>
-                )}
-
-                {/* Follow-ups */}
-                {message.followups && message.followups.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-4">
-                    {message.followups.map((followup) => (
-                      <button
-                        type="button"
-                        key={followup}
-                        onClick={() => void submitQuery(followup)}
-                        className="flex items-center gap-1.5 px-3 py-2 text-[12px] font-bold text-hcl-blue-600 bg-white border border-hcl-blue-200 rounded-xl hover:bg-hcl-blue-50 hover:border-hcl-blue-300 hover:shadow-hcl transition-all duration-200 text-left"
-                      >
-                        <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                        {followup}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              </div>
-            </article>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Error */}
-        {error && (
-          <div className="mx-6 mb-3 flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-[13px] font-semibold text-red-700 animate-fade-in">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            {error}
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-hcl">
+            {sessions.map((session) => (
+              <button
+                key={session.id}
+                type="button"
+                onClick={() => selectSession(session.id)}
+                className={`w-full rounded-xl border px-3 py-3 text-left transition-all ${
+                  activeSessionId === session.id
+                    ? 'border-hcl-blue-300 bg-hcl-blue-50 shadow-sm dark:border-hcl-blue-600 dark:bg-slate-800'
+                    : 'border-transparent bg-white/70 hover:border-hcl-blue-200 hover:bg-hcl-blue-50/70 dark:bg-slate-900/70 dark:hover:border-slate-700 dark:hover:bg-slate-800'
+                }`}
+              >
+                <p className="text-[13px] font-semibold text-hcl-navy-600 truncate dark:text-slate-200">{session.title}</p>
+                <p className="mt-1 text-[11px] text-hcl-navy-300 dark:text-slate-500">
+                  {new Date(session.updatedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                </p>
+              </button>
+            ))}
           </div>
-        )}
+        </aside>
 
-        {/* Composer */}
-        <form className="px-6 pb-6 pt-3" onSubmit={sendMessage}>
-          <div className="flex gap-3 items-end">
-            <div className="flex-1 relative">
-              <textarea
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault()
-                    sendMessage()
-                  }
-                }}
-                placeholder="Ask about current AI news, a company update, or a complex comparison..."
-                rows={2}
-                className="w-full resize-none border border-hcl-blue-200 rounded-xl px-4 py-3 text-[14px] text-hcl-navy-600 bg-white placeholder:text-hcl-navy-300 leading-relaxed focus:outline-none focus:ring-2 focus:ring-hcl-blue-500/20 focus:border-hcl-blue-400 transition-all duration-200"
-              />
-            </div>
-            {isStreaming ? (
+        <div className="flex min-h-[480px] flex-1 flex-col">
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-hcl-blue-100 bg-gradient-to-r from-hcl-blue-50/50 to-transparent px-4 py-4 sm:px-6 dark:border-slate-800 dark:from-slate-900/70 dark:to-slate-950">
+            <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={stopStreaming}
-                className="flex items-center gap-2 px-5 py-3 bg-red-600 text-white rounded-xl text-[14px] font-bold hover:bg-red-700 transition-colors shrink-0"
+                className="rounded-lg border border-hcl-blue-200 bg-white p-2 text-hcl-blue-600 lg:hidden dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                onClick={() => setShowSidebar((current) => !current)}
               >
-                <Square className="w-4 h-4" />
-                Stop
+                <MessageSquare className="w-4 h-4" />
               </button>
-            ) : (
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <Sparkles className="w-4 h-4 text-hcl-teal-500" />
+                  <p className="text-[12px] font-bold text-hcl-teal-600 uppercase tracking-widest dark:text-hcl-teal-400">
+                    Real-Time AI Query Agent
+                  </p>
+                </div>
+                <h1 className="text-lg font-bold text-hcl-navy-500 leading-tight dark:text-slate-100">
+                  Grounded answers with feedback loops
+                </h1>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
               <button
-                type="submit"
-                disabled={!query.trim()}
-                className="flex items-center gap-2 px-5 py-3 gradient-hcl text-white rounded-xl text-[14px] font-bold hover:shadow-hcl-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200 shrink-0"
+                type="button"
+                onClick={() => setDarkMode((current) => !current)}
+                className="flex items-center gap-1.5 rounded-lg border border-hcl-blue-200 bg-white px-3 py-2 text-[13px] font-semibold text-hcl-navy-400 hover:bg-hcl-blue-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
               >
-                <Send className="w-4 h-4" />
-                Send
+                {darkMode ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+                {darkMode ? 'Light' : 'Dark'}
               </button>
-            )}
+              <button
+                type="button"
+                onClick={resetChat}
+                className="flex items-center gap-1.5 rounded-lg border border-hcl-blue-200 bg-white px-3 py-2 text-[13px] font-semibold text-hcl-navy-400 hover:bg-hcl-blue-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                New chat
+              </button>
+              <div className={`flex items-center gap-1.5 px-3 py-2 rounded-full text-[13px] font-bold border transition-all duration-300 ${
+                isStreaming
+                  ? 'text-hcl-teal-700 border-hcl-teal-300 bg-hcl-teal-50 dark:border-hcl-teal-700 dark:bg-hcl-teal-950/30 dark:text-hcl-teal-300'
+                  : 'text-hcl-navy-300 border-hcl-blue-100 bg-white dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+              }`}>
+                <span className={`w-2 h-2 rounded-full transition-colors duration-300 ${
+                  isStreaming ? 'bg-hcl-teal-500 animate-pulse' : 'bg-hcl-navy-200 dark:bg-slate-500'
+                }`} />
+                {isStreaming ? 'Live' : 'Ready'}
+              </div>
+            </div>
+          </header>
 
+          <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6 space-y-4 sm:space-y-6 scrollbar-hcl" aria-live="polite">
+            {messages.map((message) => (
+              <article
+                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} animate-slide-up`}
+                key={message.id}
+              >
+                <div className={`w-fit max-w-[900px] rounded-2xl ${
+                  message.role === 'user'
+                    ? 'bg-gradient-to-br from-hcl-blue-500 to-hcl-blue-700 text-white shadow-hcl'
+                    : 'bg-white border border-hcl-blue-100 shadow-hcl dark:bg-slate-900 dark:border-slate-800'
+                }`}>
+                  <div className="px-4 py-4 sm:px-5 sm:py-4">
+                    {message.status && (
+                      <div className="flex items-center gap-2 mb-3">
+                        <Loader2 className="w-3.5 h-3.5 text-hcl-blue-500 animate-spin" />
+                        <span className="text-[12px] font-bold text-hcl-blue-500">{message.status}</span>
+                      </div>
+                    )}
+
+                    {message.reasoning && message.reasoning.length > 0 && (
+                      <ReasoningPanel steps={message.reasoning} complete={message.complete} />
+                    )}
+
+                    <div className="text-[14px] leading-[1.65] whitespace-pre-wrap break-words">
+                      {message.content ? (
+                        <span className={message.role === 'user' ? 'text-white' : 'text-hcl-navy-600 dark:text-slate-300'}>
+                          {renderAnswer(message.content)}
+                        </span>
+                      ) : !message.complete ? (
+                        <div className="flex flex-col gap-2.5 py-2">
+                          <div className="h-3.5 rounded-lg bg-gradient-to-r from-hcl-blue-100 via-hcl-blue-50 to-hcl-blue-100 bg-[length:200%_100%] animate-shimmer w-[85%]" />
+                          <div className="h-3.5 rounded-lg bg-gradient-to-r from-hcl-blue-100 via-hcl-blue-50 to-hcl-blue-100 bg-[length:200%_100%] animate-shimmer w-[55%]" />
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {!message.content && !message.complete && message.status === 'Answering' && <TypingIndicator />}
+
+                    {message.confidence && <ConfidenceBadge confidence={message.confidence} />}
+
+                    {message.contradictions && <ContradictionPanel report={message.contradictions} />}
+
+                    {message.role === 'assistant' && message.complete && (message.citations?.length ?? 0) > 0 && (
+                      <SourcesPanel citations={message.citations!} />
+                    )}
+
+                    {message.role === 'assistant' && message.complete && message.content && (
+                      <div className="flex justify-end mt-4">
+                        <button
+                          type="button"
+                          onClick={() => exportMarkdown(message)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-semibold text-hcl-navy-400 bg-hcl-blue-50 border border-hcl-blue-100 rounded-lg hover:bg-hcl-blue-100 hover:border-hcl-blue-200 transition-all duration-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          Export
+                        </button>
+                      </div>
+                    )}
+
+                    {message.followups && message.followups.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-4">
+                        {message.followups.map((followup) => (
+                          <button
+                            type="button"
+                            key={followup}
+                            onClick={() => void submitQuery(followup)}
+                            className="flex items-center gap-1.5 px-3 py-2 text-[12px] font-bold text-hcl-blue-600 bg-white border border-hcl-blue-200 rounded-xl hover:bg-hcl-blue-50 hover:border-hcl-blue-300 hover:shadow-hcl transition-all duration-200 text-left dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                            {followup}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </article>
+            ))}
+            <div ref={messagesEndRef} />
           </div>
-        </form>
+
+          {error && (
+            <div className="mx-4 mb-3 flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-[13px] font-semibold text-red-700 animate-fade-in sm:mx-6 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              {error}
+            </div>
+          )}
+
+          <form className="px-4 pb-4 pt-3 sm:px-6 sm:pb-6" onSubmit={sendMessage}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="flex-1 relative">
+                <textarea
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      sendMessage()
+                    }
+                  }}
+                  placeholder="Ask about current AI news, a company update, or a complex comparison..."
+                  rows={2}
+                  className="w-full resize-none border border-hcl-blue-200 rounded-xl px-4 py-3 text-[14px] text-hcl-navy-600 bg-white placeholder:text-hcl-navy-300 leading-relaxed focus:outline-none focus:ring-2 focus:ring-hcl-blue-500/20 focus:border-hcl-blue-400 transition-all duration-200 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:placeholder:text-slate-500"
+                />
+              </div>
+              {isStreaming ? (
+                <button
+                  type="button"
+                  onClick={stopStreaming}
+                  className="flex items-center justify-center gap-2 px-5 py-3 bg-red-600 text-white rounded-xl text-[14px] font-bold hover:bg-red-700 transition-colors shrink-0"
+                >
+                  <Square className="w-4 h-4" />
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!query.trim()}
+                  className="flex items-center justify-center gap-2 px-5 py-3 gradient-hcl text-white rounded-xl text-[14px] font-bold hover:shadow-hcl-lg disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-200 shrink-0"
+                >
+                  <Send className="w-4 h-4" />
+                  Send
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
       </section>
     </main>
   )

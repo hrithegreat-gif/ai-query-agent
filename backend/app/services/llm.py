@@ -12,7 +12,7 @@ from app.config import settings
 from app.services.events import sse
 from app.services.memory import append_memory, get_memory
 from app.services.storage import save_message
-from app.services.web import SearchResult, scrape_url, search_web
+from app.services.web import SearchResult, scrape_url, search_web, rank_sources, score_source
 from app.config import load_prompt, settings
 
 SYSTEM_PROMPT = load_prompt("system")
@@ -21,6 +21,7 @@ CONFIDENCE_PROMPT = load_prompt("confidence")
 CONTRADICTIONS_PROMPT = load_prompt("contradictions")
 FOLLOWUPS_PROMPT = load_prompt("followups")
 REFINE_PROMPT = load_prompt("refine")
+PLANNER_PROMPT = load_prompt("planner")
 
 llm = ChatOllama(
     model=settings.ollama_model,
@@ -28,71 +29,10 @@ llm = ChatOllama(
     temperature=0.7,
 )
 
-CURRENT_INFO_TERMS = {
-    "latest",
-    "today",
-    "yesterday",
-    "current",
-    "recent",
-    "news",
-    "now",
-    "this week",
-    "this month",
-    "2025",
-    "2026",
-    "price",
-    "stock",
-    "weather",
-    "release",
-    "update",
-    "research",
-    "study",
-    "survey",
-    "report",
-    "statistics",
-    "data",
-}
-
-OPINION_TERMS = {
-    "is it",
-    "is remote",
-    "better or worse",
-    "good or bad",
-    "more productive",
-    "worth it",
-    "should i",
-    "pros and cons",
-    "is coffee",
-    "is working",
-    "productivity",
-    "which is better",
-    "are they",
-    "does it",
-}
-
-COMPLEX_QUERY_TERMS = {
-    "compare",
-    "contrast",
-    "versus",
-    " vs ",
-    "tradeoffs",
-    "pros and cons",
-    "timeline",
-    "strategy",
-    "impact",
-    "across",
-    "between",
-    "summarise the top",
-    "summarize the top",
-}
 
 CITATION_PATTERN = re.compile(r"\[Source:\s*(https?://[^\]\s]+)\s*\]")
 MAX_REQUERY_ATTEMPTS = 2
 
-SYSTEM_PROMPT = """You are a helpful real-time AI query agent.
-Answer clearly and concisely.
-When live web context is provided, ground your answer in it and cite sources inline as [Source: URL].
-Do not mention sources, citations, or web search at all when answering from general knowledge."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -112,31 +52,30 @@ def _parse_json(text: str) -> Any:
     return json.loads(cleaned.strip())
 
 
-async def should_search(query: str) -> bool:
+async def query_plan(query: str) -> dict[str, Any]:
     prompt = [
-        SystemMessage(content=load_prompt("should_search")),
+        SystemMessage(content=PLANNER_PROMPT),
         HumanMessage(content=query),
     ]
     try:
         response = await llm.ainvoke(prompt)
         parsed = _parse_json(str(response.content))
-        result = bool(parsed.get("search", False))
-        print(f"DEBUG should_search('{query}') = {result}")
-        return result
-    except Exception:
-        # Fallback to keyword matching if LLM call fails
-        lowered = query.lower()
-        return any(term in lowered for term in {
-            "latest", "today", "current", "recent", "news",
-            "price", "stock", "weather", "release", "update",
-            "research", "study", "survey", "compare", "vs",
-            "good or bad", "better or worse", "more productive",
-        })
+        return {
+            "needs_search": bool(parsed.get("needs_search", False)),
+            "complex": bool(parsed.get("complex", False)),
+            "subquestions": parsed.get("subquestions", []) if isinstance(parsed.get("subquestions"), list) else [],
+            "reasoning": str(parsed.get("reasoning", "")),
+        }
+    except Exception as exc:
+        print(f"ERROR: Query planner failed: {exc}")
+        return {
+            "needs_search": True,
+            "complex": False,
+            "subquestions": [],
+            "reasoning": "Planner error, falling back to basic search",
+        }
 
 
-def is_complex_query(query: str) -> bool:
-    lowered = f" {query.lower()} "
-    return len(query.split()) > 18 or any(term in lowered for term in COMPLEX_QUERY_TERMS)
 
 
 def _tool_call(
@@ -186,7 +125,7 @@ def _dedupe_results(results: list[SearchResult]) -> list[SearchResult]:
     return deduped
 
 
-def _format_sources(results: list[SearchResult], page_content: str = "") -> str:
+def _format_sources(results: list[SearchResult], page_contents: str | list[str] | None = None) -> str:
     if not results:
         return "No live web results were available."
     lines = []
@@ -197,10 +136,15 @@ def _format_sources(results: list[SearchResult], page_content: str = "") -> str:
             f"Published: {item.published_date or 'unknown'}\n"
             f"Snippet: {item.snippet}"
         )
-    if page_content:
+    if page_contents:
+        if isinstance(page_contents, str):
+            page_contents = [page_contents]
         lines.append(
-            f"\nDetailed page content from top source, capped to 3000 characters:\n{page_content}"
+            "\nDetailed page content from top sources, capped to 3000 characters each:"
         )
+        for idx, content in enumerate(page_contents, start=1):
+            if content.strip():
+                lines.append(f"\n[Source {idx} Content]\n{content}")
     return "\n\n".join(lines)
 
 
@@ -213,27 +157,17 @@ def _format_decomposed_context(searches: list[tuple[str, list[SearchResult]]]) -
     return "\n\n---\n\n".join(blocks)
 
 
-def _citation_payload(answer: str, sources: list[SearchResult]) -> list[dict[str, Any]]:
-    source_map = {_source_key(item): item for item in sources}
-    citations: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for raw_url in CITATION_PATTERN.findall(answer):
-        url = raw_url.rstrip(".,)")
-        key = url.rstrip("/")
-        if key in seen:
-            continue
-        seen.add(key)
-        source = source_map.get(key)
-        citations.append(
-            {
-                "url": url,
-                "title": source.title if source else url,
-                "snippet": source.snippet if source else "",
-                "published_date": source.published_date if source else None,
-                "cited_at": now_iso(),
-            }
-        )
-    return citations
+def _build_citations(sources: list[SearchResult]) -> list[dict[str, Any]]:
+    return [
+        {
+            "url": item.url,
+            "title": item.title,
+            "snippet": item.snippet,
+            "published_date": item.published_date,
+            "cited_at": now_iso(),
+        }
+        for item in sources
+    ]
 
 
 def _answer_messages(
@@ -260,30 +194,6 @@ def _answer_messages(
 
 # ── LLM calls ────────────────────────────────────────────────────────────────
 
-async def _decompose_query(query: str) -> list[str]:
-    if not is_complex_query(query):
-        return []
-    prompt = [
-       SystemMessage(content=DECOMPOSE_PROMPT),
-        HumanMessage(content=query),
-    ]
-    try:
-        response = await llm.ainvoke(prompt)
-        parsed = _parse_json(str(response.content))
-        sub_questions = parsed.get("sub_questions", [])
-        return [str(item).strip() for item in sub_questions if str(item).strip()][:3]
-    except Exception:
-        return _heuristic_sub_questions(query)
-
-
-def _heuristic_sub_questions(query: str) -> list[str]:
-    if not is_complex_query(query):
-        return []
-    return [
-        f"What are the most relevant facts for: {query}",
-        f"What recent or source-backed evidence helps answer: {query}",
-        f"What conclusion follows when comparing the evidence for: {query}",
-    ]
 
 
 async def _search_sub_question(sub_question: str) -> tuple[str, list[SearchResult]]:
@@ -380,14 +290,20 @@ async def _followups(query: str, answer: str) -> list[str]:
 # ── Live context builder ──────────────────────────────────────────────────────
 
 async def _build_live_context(query: str) -> AsyncIterator[tuple[str, list[SearchResult], str]]:
-    sub_questions = await _decompose_query(query)
-    if sub_questions:
+    plan = await query_plan(query)
+    
+    if not plan["needs_search"]:
+        yield ("", [], "")
+        return
+
+    if plan["complex"] and plan["subquestions"]:
+        sub_questions = plan["subquestions"]
         yield (
             _tool_call(
                 "DECOMPOSING",
-                "query_decomposer",
+                "query_planner",
                 query,
-                f"Breaking the query into {len(sub_questions)} sub-questions",
+                f"Decomposed into {len(sub_questions)} steps: {plan['reasoning']}",
                 {"sub_questions": sub_questions},
             ),
             [],
@@ -395,51 +311,60 @@ async def _build_live_context(query: str) -> AsyncIterator[tuple[str, list[Searc
         )
         searches = await asyncio.gather(*[_search_sub_question(item) for item in sub_questions])
         all_results = _dedupe_results([result for _, results in searches for result in results])
+        
+        # Rank results
+        ranked_pairs = rank_sources(all_results, query, top_k=3)
+        ranked_results = [r for r, _ in ranked_pairs]
+
         yield (
             _tool_call(
                 "SEARCHING",
                 "tavily_search",
                 " | ".join(sub_questions),
-                f"Searched {len(sub_questions)} sub-questions in parallel",
-                {"sources": [item.__dict__ for item in all_results]},
+                f"Searched {len(sub_questions)} sub-questions in parallel. Ranked top {len(ranked_results)} results.",
+                {"sources": [item.__dict__ for item in ranked_results]},
             ),
-            all_results,
+            ranked_results,
             _format_decomposed_context(searches),
         )
         return
 
-    if await should_search(query):
-        yield (_tool_call("SEARCHING", "tavily_search", query, "Searching the live web"), [], "")
-        results = await search_web(query)
-        if not results:
-            yield (
-                _tool_call("SEARCH_COMPLETE", "tavily_search", query, "No web results available"),
-                [],
-                _format_sources([]),
-            )
-            return
-
+    yield (_tool_call("SEARCHING", "tavily_search", query, f"Searching: {plan['reasoning']}"), [], "")
+    results = await search_web(query)
+    if not results:
         yield (
-            _tool_call(
-                "SEARCH_COMPLETE",
-                "tavily_search",
-                query,
-                f"Found {len(results)} web results",
-                {"sources": [item.__dict__ for item in results]},
-            ),
-            results,
-            "",
+            _tool_call("SEARCH_COMPLETE", "tavily_search", query, "No web results available"),
+            [],
+            _format_sources([]),
         )
-        yield (
-            _tool_call("READING", "firecrawl_scrape", results[0].url, "Reading the strongest source"),
-            results,
-            "",
-        )
-        page_content = await scrape_url(results[0].url)
-        yield ("", results, _format_sources(results, page_content))
         return
 
-    yield ("", [], "")
+    # Rank results
+    ranked_pairs = rank_sources(results, query, top_k=3)
+    ranked_results = [r for r, _ in ranked_pairs]
+
+    yield (
+        _tool_call(
+            "SEARCH_COMPLETE",
+            "tavily_search",
+            query,
+            f"Found {len(results)} web results, ranked top {len(ranked_results)}",
+            {"sources": [item.__dict__ for item in ranked_results]},
+        ),
+        ranked_results,
+        "",
+    )
+    
+    urls_str = ", ".join(r.url for r in ranked_results)
+    yield (
+        _tool_call("READING", "firecrawl_scrape", urls_str, f"Reading top {len(ranked_results)} sources in parallel"),
+        ranked_results,
+        "",
+    )
+    
+    # Async scraping
+    page_contents = await asyncio.gather(*[scrape_url(r.url) for r in ranked_results])
+    yield ("", ranked_results, _format_sources(ranked_results, list(page_contents)))
 
 
 # ── Answer streaming ──────────────────────────────────────────────────────────
@@ -490,7 +415,7 @@ async def stream_chat(query: str, session_id: str) -> AsyncIterator[str]:
         return
 
     answer = "".join(answer_parts)
-    citations = _citation_payload(answer, all_sources)
+    citations = _build_citations(all_sources)
     confidence = await _confidence(answer, citations) if all_sources else None
 
     # ── Auto re-query loop ────────────────────────────────────────────────────
@@ -540,7 +465,7 @@ async def stream_chat(query: str, session_id: str) -> AsyncIterator[str]:
             return
 
         answer = "".join(answer_parts)
-        citations = _citation_payload(answer, all_sources)
+        citations = _build_citations(all_sources)
         confidence = await _confidence(answer, citations)
 
     # ── Post-answer analysis ──────────────────────────────────────────────────

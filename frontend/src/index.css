@@ -17,6 +17,12 @@
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
     line-height: 1.5;
     color: #1A2744;
+    background-color: #F7F9FC;
+  }
+
+  html.dark body {
+    color: #E2E8F0;
+    background-color: #020617;
   }
 
   ::selection {
@@ -45,6 +51,12 @@
   .scrollbar-hcl::-webkit-scrollbar-thumb:hover {
     background: #5B9FF7;
   }
+  html.dark .scrollbar-hcl::-webkit-scrollbar-thumb {
+    background: #475569;
+  }
+  html.dark .scrollbar-hcl::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
 }
 
 @layer utilities {
@@ -60,5 +72,12 @@
       radial-gradient(ellipse at 80% 20%, rgba(0, 163, 163, 0.06) 0%, transparent 50%),
       radial-gradient(ellipse at 50% 80%, rgba(15, 95, 220, 0.04) 0%, transparent 50%),
       #F7F9FC;
+  }
+  html.dark .gradient-hcl-mesh {
+    background:
+      radial-gradient(ellipse at 20% 50%, rgba(15, 95, 220, 0.2) 0%, transparent 45%),
+      radial-gradient(ellipse at 80% 20%, rgba(0, 163, 163, 0.14) 0%, transparent 45%),
+      radial-gradient(ellipse at 50% 80%, rgba(15, 95, 220, 0.12) 0%, transparent 50%),
+      #020617;
   }
 }
